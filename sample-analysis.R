@@ -1,0 +1,262 @@
+require(tidyverse)
+
+
+d = read_csv('sample.csv', col_types = cols(timestamp = 'T', url = 'c', category = 'c', variable = 'c', value = 'c', char_offset = 'c', rank = 'i')) |> 
+  filter(category != 'extras' | str_starts(variable, 'PAGE_'))
+
+# table fields
+glimpse(d)
+
+length(unique(d$url)) # article count
+
+nrow(d)               # encoding count
+
+# encoding instance count
+d |> mutate(char_offset = str_split(char_offset, ',')) |> unnest(char_offset) |> nrow() 
+
+# Wggner subset
+e = d |> filter(category %in% c('person', 'org')) |> 
+  filter(str_detect(value, fixed('Wagner', ignore_case=TRUE ))) |> 
+  select(url) |> distinct() |> left_join(d, by = 'url')
+
+length(unique(e$url)) # article count
+
+# top persons and organisations
+e |> filter(category == 'person') |> count(value, sort = TRUE) |> View()
+e |> filter(category == 'org') |> count(value, sort = TRUE) |> View()
+
+# top domains
+d |> select(url) |> distinct() |> 
+  mutate(domain = str_extract(url, '(?<=//)[^/]+') |> str_remove('www.')) |> 
+  count(domain, sort = TRUE) |> print(n = 25)
+
+# function for extracting encodings within a given character distance 
+near_terms = function(x, term, tol = 75, exclude_themes = FALSE){
+  x_markers = x$char_offset[ which(x$value == term) ]
+  x_ranges = map(x_markers, ~ seq(.x - tol, .x + tol, 1)) |> unlist() |> unique()
+  res = x |> filter(char_offset %in% x_ranges, value != term) |> arrange(char_offset)
+  if(!exclude_themes) return(res)
+  res |> filter(category != 'theme')
+}
+
+# Economic themes
+
+require(ggnetwork)
+
+d |> filter(category == 'theme') |> 
+  select(url, category:value) |> distinct() |> 
+  count(value, sort = TRUE) |> print(n = 25)
+
+d |> filter(category == 'theme', variable == 'EPU') |> 
+  select(url, category:value) |> distinct() |> 
+  count(value, sort = TRUE) |> print(n = 25)
+
+d |> filter(category == 'theme', variable == 'ECON') |> 
+  select(url, category:value) |> distinct() |> 
+  count(value, sort = TRUE) |> print(n = 25)
+
+d |> filter(category == 'theme', variable == 'UNGP') |> 
+  select(url, category:value) |> distinct() |> 
+  count(value, sort = TRUE) |> print(n = 25)
+
+d |> filter(category == 'theme', variable == 'CRISISLEX') |> 
+  select(url, category:value) |> distinct() |> 
+  count(value, sort = TRUE) |> print(n = 25)
+
+d |> filter(category == 'theme', variable == 'TAX') |> 
+  mutate(tax = str_extract(value, 'TAX_[A-Z]+')) |> 
+  select(url, tax) |> distinct() |> 
+  count(tax, sort = TRUE) |> print(n = 25)
+
+d |> filter(category == 'theme', str_starts(value, 'TAX_FNCAC')) |> 
+  select(url, category:value) |> distinct() |> 
+  count(value, sort = TRUE) |> print(n = 25)
+
+d |> filter(category == 'theme', str_starts(value, 'TAX_ECON')) |> 
+  select(url, category:value) |> distinct() |> 
+  count(value, sort = TRUE) |> print(n = 25)
+
+
+build_links = function(x) expand_grid(from = x, to = x) |> filter(to > from)
+
+e = d |> 
+  filter(str_detect(value, 'WORLDCURRENCIES_')) |> 
+  mutate(value = str_remove(value, 'S$')) |> 
+  select(url, value) |> 
+  group_split(url) |> 
+  map_df(~ {
+    dat = distinct(.x)
+    build_links(dat$value)
+  }) |> 
+  mutate(from = str_remove(from, 'ECON_WORLDCURRENCIES_'),
+         to = str_remove(to, 'ECON_WORLDCURRENCIES_')) |> 
+  count(from, to, sort = TRUE)
+
+g = e |> filter(n > 10) |> network::network()
+
+g |> ggplot(aes(x, y, xend = xend, yend = yend)) +
+  geom_nodes() +
+  geom_edges(aes(linewidth = n, col = log(n)), curvature = .1) +
+  geom_nodelabel_repel(aes(label = vertex.names), size = 2) +
+  theme_blank() +
+  scale_linewidth_continuous(limits = c(0, max(e$n)), range = c(0, 5)) +
+  scale_color_continuous(low = 'black', high = 'red') +
+  guides(col = 'none')
+
+
+#---------------------------------
+
+# Supply chain 
+
+d |> filter(str_detect(value, 'SUPPLY_CHAIN')) |> count(value, sort = TRUE)
+
+d |> filter(str_detect(value, 'TRADE')) |> count(value, sort = TRUE)
+
+e = d |> filter(value == 'WB_698_TRADE', rank < 10) |> 
+  filter(str_detect(value, fixed('trade', ignore_case=TRUE))) |> 
+  select(url) |> distinct() |> left_join(d, by = 'url') |> 
+  mutate(value = paste0(category, ': ', value))
+
+e |> select(url) |> distinct() |> nrow()
+
+e |> filter(category == 'theme') |> count(value, sort = TRUE) |> View()
+
+#-------------------------------------
+
+# inflation - different subsets
+
+# ECON_INFLATION tag
+e = d |> filter(value == 'ECON_INFLATION', rank <= 10) |> 
+  select(url) |> distinct() |> left_join(d, by = 'url')
+
+e |> select(url) |> distinct() |> nrow()
+
+# inspect titles
+e |> select(url) |> distinct() |> left_join(d, by = 'url') |>
+  filter(variable == 'PAGE_TITLE') |> 
+  mutate(domain = str_extract(url, '(?<=://).*?(?=/)') |> str_remove('www[.]')) |> 
+  mutate(date = format(timestamp, '%d %b %y')) |> 
+  arrange(timestamp) |> 
+  select(date, domain, value) |> 
+  View()
+
+e = d |> filter(str_detect(value, fixed('inflation', ignore_case = TRUE)))
+
+e |> select(url) |> distinct() |> nrow() # compare subset generated by encodings
+
+e |> select(url, category, value) |> distinct() |> count(url, category) |> 
+  pivot_wider(names_from = category, values_from = n, values_fill = 0) |> 
+  count(theme, extras, sort = TRUE)
+
+e |> filter(category == 'extras') |> select(url, variable, value) |> count(variable)
+
+# top domains for reporting
+e |> select(url) |> distinct() |> 
+  mutate(domain = str_extract(url, '(?<=://).*?(?=/)') |> str_remove('www[.]')) |> 
+  count(domain, sort = TRUE) |> 
+  head(25) |> 
+  ggplot(aes(fct_reorder(domain, n), n)) +
+  geom_col() +
+  coord_flip() +
+  labs(x = 'domain', y = 'article count')
+
+# top countries referenced in reporting
+e |> filter(category == 'geo', variable == 1) |> 
+  count(value, sort = TRUE) |> 
+  filter(value %in% countrycode::codelist$country.name.en) |> 
+  head(25) |> 
+  ggplot(aes(fct_reorder(value,n), n)) +
+  geom_col() +
+  coord_flip() +
+  labs(x = 'country/nationality reference', y = 'raw count')
+
+# top persons 
+e |> filter(category == 'person') |> 
+  count(value, sort = TRUE) |> 
+  head(25) |> 
+  ggplot(aes(fct_reorder(value,n), n)) +
+  geom_col() +
+  coord_flip() +
+  labs(x = 'person', y = 'raw count')
+
+# top organisations
+e |> filter(category == 'org') |> 
+  count(value, sort = TRUE) |> 
+  head(25) |> 
+  ggplot(aes(fct_reorder(value,n), n)) +
+  geom_col() +
+  coord_flip() +
+  labs(x = 'organisation', y = 'raw count')
+
+
+# nearby terms
+
+e2 = e |> select(-timestamp, -rank) |> 
+  mutate(char_offset = str_split(char_offset, ',')) |> 
+  unnest(char_offset) |> mutate(char_offset = as.integer(char_offset))
+
+near_terms = function(x, term, tol = 75, exclude_themes = FALSE){
+  x_markers = x$char_offset[ which(x$value == term) ]
+  x_ranges = map(x_markers, ~ seq(.x - tol, .x + tol, 1)) |> unlist() |> unique()
+  res = x |> filter(char_offset %in% x_ranges, value != term) |> arrange(char_offset)
+  if(!exclude_themes) return(res)
+  res |> filter(category != 'theme')
+}
+
+e2 |> filter(url == sample(url, 1)) |> 
+  near_terms(term = 'ECON_INFLATION', tol = 100, exclude_themes = T)
+
+e3 = e2 |> group_split(url) |> 
+  map_df(near_terms, term = 'ECON_INFLATION', tol = 100, exclude_themes = TRUE)
+
+e3 |> select(-char_offset) |> distinct() |> 
+  filter(category == 'person') |> 
+  count(value, sort = TRUE) |> print(n = 25)
+
+
+#-------------------------------------------------------
+
+
+require(uwot)
+# require(rgl)
+require(ggrgl)
+require(devoutrgl)
+
+e = d |> filter(value == 'ECON_INFLATION', rank <= 10) |> 
+  select(url) |> distinct() |> left_join(d, by = 'url') |> 
+  filter(category %in% c('person', 'org')) |> 
+  mutate(n = str_count(char_offset, ',') + 1) |> 
+  group_by(url, value) |> summarise(n = sum(n), .groups = 'drop')
+
+e512 = e |> count(value, sort = TRUE) |> head(512)
+
+e2 = e |> filter(value %in% e512$value) |> 
+  pivot_wider(names_from = value, values_from = n, values_fill = 0)
+
+u = uwot::umap(select(e2, -url),
+                n_neighbors = 10,
+                n_components = 3,
+                min_dist = 0,
+                metric = "euclidean") %>%
+  as_tibble()
+
+e3 = bind_cols(select(e2, url), rename(u, x = V1, y = V2, z = V3))
+
+# points3d(e3[,2:4])
+
+e3 |> ggplot(aes(x, y, z = z)) + ggrgl::geom_point_z()
+
+p = e3 |> ggplot(aes(x, y, z = z)) + ggrgl::geom_sphere_3d()
+
+devoutrgl::rgldev(fov = 30, view_angle = -30)
+p
+invisible(dev.off())
+
+devoutrgl::save_animated_scene(gif_name = 'out.gif')
+p
+invisible(dev.off())
+
+?devoutrgl::animate_scene
+
+
+
